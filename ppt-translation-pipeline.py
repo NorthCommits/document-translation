@@ -39,6 +39,8 @@ from pptx.util import Pt, Inches
 from pptx.enum.text import PP_ALIGN, MSO_AUTO_SIZE, MSO_ANCHOR
 import zipfile
 from lxml import etree
+import truststore
+truststore.inject_into_ssl()
 
 
 # ============================================================================
