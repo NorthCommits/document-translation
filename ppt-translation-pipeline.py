@@ -21,16 +21,10 @@ import sys
 import time
 import argparse
 import requests
-import re
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from copy import deepcopy
 from dotenv import load_dotenv
-from datetime import datetime
-
-# Excel generation imports
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 # PowerPoint libraries
 from pptx import Presentation
@@ -39,8 +33,6 @@ from pptx.util import Pt, Inches
 from pptx.enum.text import PP_ALIGN, MSO_AUTO_SIZE, MSO_ANCHOR
 import zipfile
 from lxml import etree
-import truststore
-truststore.inject_into_ssl()
 
 
 # ============================================================================
@@ -57,42 +49,14 @@ DEEPL_ENDPOINT = os.getenv('DEEPL_ENDPOINT', 'https://api.deepl.com/v2/translate
 
 # Language Configuration
 SUPPORTED_LANGUAGES = {
-    # Western European Languages
     'French': 'FR',
     'Spanish': 'ES',
     'Italian': 'IT',
     'German': 'DE',
-    'Portuguese': 'PT-PT',
-    'Dutch': 'NL',
-    'Swedish': 'SV',
-    'Danish': 'DA',
-    'Norwegian': 'NB',
-    'Finnish': 'FI',
-    'Polish': 'PL',
-    'Czech': 'CS',
-    'Romanian': 'RO',
-    'Hungarian': 'HU',
-    'Greek': 'EL',
-    'Bulgarian': 'BG',
-    'Slovak': 'SK',
-    'Slovenian': 'SL',
-    'Lithuanian': 'LT',
-    'Latvian': 'LV',
-    'Estonian': 'ET',
-    
-    # Asian Languages
     'Chinese': 'ZH',
     'Japanese': 'JA',
-    'Korean': 'KO',
-    'Indonesian': 'ID',
-    'Turkish': 'TR',
-    
-    # RTL Languages
-    'Arabic': 'AR',
-    'Hebrew': 'HE',
-    
-    # English (for reverse translation - any language to English)
-    'English': 'EN-US'
+    'Dutch': 'NL',
+    'Swedish': 'SV'
 }
 
 # Glossary Configuration
@@ -943,26 +907,18 @@ class PPTXExtractor:
 class DeepLTranslator:
     """Translate PowerPoint content using DeepL API"""
     
-    def __init__(self, target_language: str, source_language: Optional[str] = None):
+    def __init__(self, target_language: str):
         if not DEEPL_API_KEY:
             raise ValueError("DEEPL_API_KEY not found in environment variables")
         
         self.api_key = DEEPL_API_KEY
         self.endpoint = DEEPL_ENDPOINT
         self.target_language = target_language
-        self.source_language = source_language
         
-        # Get DeepL language code for target
+        # Get DeepL language code
         self.target_lang_code = SUPPORTED_LANGUAGES.get(target_language)
         if not self.target_lang_code:
             raise ValueError(f"Language '{target_language}' not supported. Supported: {list(SUPPORTED_LANGUAGES.keys())}")
-        
-        # Get DeepL language code for source (if specified)
-        self.source_lang_code = None
-        if source_language:
-            self.source_lang_code = SUPPORTED_LANGUAGES.get(source_language)
-            if not self.source_lang_code:
-                raise ValueError(f"Source language '{source_language}' not supported. Supported: {list(SUPPORTED_LANGUAGES.keys())}")
         
         # Check for glossary - but only use if it exists for this language pair
         self.glossary_id = GLOSSARIES.get(self.target_lang_code)
@@ -979,10 +935,6 @@ class DeepLTranslator:
         }
         
         print(f"✓ DeepL Translator initialized")
-        if source_language:
-            print(f"  Source: {source_language} ({self.source_lang_code})")
-        else:
-            print(f"  Source: Auto-detect")
         print(f"  Target: {target_language} ({self.target_lang_code})")
         if self.glossary_id:
             print(f"  Glossary ID found: {self.glossary_id}")
@@ -1016,71 +968,18 @@ class DeepLTranslator:
             # Build payload with formality and model_type
             payload = {
                 "text": non_empty_texts,
+                "source_lang": "EN",
                 "target_lang": self.target_lang_code,
                 "formality": "prefer_more",
                 "model_type": "prefer_quality_optimized"
             }
             
-            # Add source language if specified (otherwise DeepL auto-detects)
-            if self.source_lang_code:
-                payload["source_lang"] = self.source_lang_code
-            
             # Add glossary if available and not yet validated as failing
             if self.glossary_id and not hasattr(self, '_glossary_failed'):
                 payload["glossary_id"] = self.glossary_id
             
-            # Make API call with retry logic for timeouts
-            max_retries = 3
-            retry_delay = 2  # seconds
-            
-            for attempt in range(max_retries):
-                try:
-                    response = requests.post(self.endpoint, headers=headers, json=payload, timeout=60)
-                    break  # Success, exit retry loop
-                except requests.exceptions.Timeout:
-                    if attempt < max_retries - 1:
-                        wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
-                        print(f"⚠️  Request timeout. Retrying in {wait_time} seconds... (attempt {attempt + 1}/{max_retries})")
-                        time.sleep(wait_time)
-                    else:
-                        print(f"⚠️  Request timeout after {max_retries} attempts. Falling back to one-by-one translation...")
-                        return self.translate_one_by_one(texts)
-                except requests.exceptions.RequestException as e:
-                    print(f"⚠️  DeepL API connection error: {e}")
-                    if attempt < max_retries - 1:
-                        wait_time = retry_delay * (2 ** attempt)
-                        print(f"   Retrying in {wait_time} seconds... (attempt {attempt + 1}/{max_retries})")
-                        time.sleep(wait_time)
-                    else:
-                        print(f"   Falling back to one-by-one translation...")
-                        return self.translate_one_by_one(texts)
-            
-            # Handle HTTP timeout (408)
-            if response.status_code == 408:
-                print(f"⚠️  Server timeout (408). Retrying with smaller batch...")
-                # Try with smaller batches
-                if len(non_empty_texts) > 5:
-                    # Split into smaller batches
-                    mid = len(non_empty_texts) // 2
-                    first_half = non_empty_texts[:mid]
-                    second_half = non_empty_texts[mid:]
-                    
-                    translated_first = self.translate_batch_small(first_half, headers)
-                    time.sleep(1)  # Brief pause between batches
-                    translated_second = self.translate_batch_small(second_half, headers)
-                    
-                    translated_texts = translated_first + translated_second
-                    
-                    # Reconstruct full list
-                    result_texts = texts.copy()
-                    for new_idx, orig_idx in text_map.items():
-                        if new_idx < len(translated_texts):
-                            result_texts[orig_idx] = translated_texts[new_idx]
-                    
-                    return result_texts
-                else:
-                    # Already small batch, fall back to one-by-one
-                    return self.translate_one_by_one(texts)
+            # Make API call
+            response = requests.post(self.endpoint, headers=headers, json=payload)
             
             # Handle glossary-specific errors
             if response.status_code == 400:
@@ -1145,43 +1044,14 @@ class DeepLTranslator:
             print(f"⚠️  Translation error: {e}")
             return texts
     
-    def translate_batch_small(self, texts: List[str], headers: dict) -> List[str]:
-        """Translate a small batch (helper for timeout recovery)"""
-        payload = {
-            "text": texts,
-            "target_lang": self.target_lang_code,
-            "formality": "prefer_more",
-            "model_type": "prefer_quality_optimized"
-        }
-        
-        if self.source_lang_code:
-            payload["source_lang"] = self.source_lang_code
-        
-        try:
-            response = requests.post(self.endpoint, headers=headers, json=payload, timeout=60)
+    def translate_one_by_one(self, texts: List[str]) -> List[str]:
+        """Fallback: translate texts one by one"""
+        translated = []
+        for text in texts:
+            if not text or not text.strip():
+                translated.append(text)
+                continue
             
-            if response.status_code == 200:
-                result = response.json()
-                translated_texts = [item["text"] for item in result.get("translations", [])]
-                self.stats["api_calls"] += 1
-                self.stats["total_texts_translated"] += len(texts)
-                self.stats["total_characters"] += sum(len(t) for t in texts)
-                return translated_texts
-            else:
-                print(f"⚠️  Batch failed with status {response.status_code}, translating one by one...")
-                return [self.translate_single(t) for t in texts]
-        except:
-            return [self.translate_single(t) for t in texts]
-    
-    def translate_single(self, text: str) -> str:
-        """Translate a single text (used in fallback scenarios)"""
-        if not text or not text.strip():
-            return text
-        
-        max_retries = 3
-        retry_delay = 3  # seconds
-        
-        for attempt in range(max_retries):
             try:
                 headers = {
                     "Authorization": f"DeepL-Auth-Key {self.api_key}",
@@ -1190,76 +1060,34 @@ class DeepLTranslator:
                 
                 payload = {
                     "text": [text],
+                    "source_lang": "EN",
                     "target_lang": self.target_lang_code,
-                    "formality": "prefer_more"
+                    "formality": "prefer_more",
+                    "model_type": "prefer_quality_optimized"
                 }
                 
-                if self.source_lang_code:
-                    payload["source_lang"] = self.source_lang_code
+                # Only add glossary if it hasn't failed before
+                if self.glossary_id and not hasattr(self, '_glossary_failed'):
+                    payload["glossary_id"] = self.glossary_id
                 
-                response = requests.post(self.endpoint, headers=headers, json=payload, timeout=30)
+                response = requests.post(self.endpoint, headers=headers, json=payload)
                 
-                if response.status_code == 200:
-                    result = response.json()
-                    translated = result.get("translations", [{}])[0].get("text", text)
-                    self.stats["api_calls"] += 1
-                    self.stats["total_texts_translated"] += 1
-                    self.stats["total_characters"] += len(text)
-                    return translated
-                elif response.status_code == 500:
-                    # Server error - retry with exponential backoff
-                    if attempt < max_retries - 1:
-                        wait_time = retry_delay * (2 ** attempt)
-                        print(f"     ⚠️  DeepL server error (500). Waiting {wait_time}s before retry...")
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        print(f"     ⚠️  DeepL server still unavailable. Keeping original text.")
-                        return text
-                elif response.status_code == 429:
-                    # Rate limit - wait longer
-                    wait_time = 10 * (2 ** attempt)
-                    print(f"     ⚠️  Rate limit hit. Waiting {wait_time}s...")
-                    time.sleep(wait_time)
+                if response.status_code != 200:
+                    # Silently skip failed texts in one-by-one mode
+                    translated.append(text)
                     continue
-                else:
-                    return text
-            except requests.exceptions.Timeout:
-                if attempt < max_retries - 1:
-                    wait_time = retry_delay * (2 ** attempt)
-                    print(f"     ⚠️  Timeout. Retrying in {wait_time}s...")
-                    time.sleep(wait_time)
-                    continue
-                else:
-                    return text
+                
+                result = response.json()
+                translated_text = result["translations"][0]["text"]
+                
+                self.stats["api_calls"] += 1
+                self.stats["total_texts_translated"] += 1
+                self.stats["total_characters"] += len(text)
+                
+                translated.append(translated_text)
+                
             except Exception as e:
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                    continue
-                else:
-                    return text
-        
-        return text
-    
-    def translate_one_by_one(self, texts: List[str]) -> List[str]:
-        """Fallback: translate texts one by one with delays"""
-        print("  💡 Translating texts individually (this may take longer)...")
-        translated = []
-        for idx, text in enumerate(texts):
-            if not text or not text.strip():
                 translated.append(text)
-                continue
-            
-            # Show progress for long lists
-            if idx > 0 and idx % 10 == 0:
-                print(f"     Progress: {idx}/{len(texts)} texts translated...")
-            
-            translated_text = self.translate_single(text)
-            translated.append(translated_text)
-            
-            # Small delay to avoid rate limiting
-            if idx < len(texts) - 1:
-                time.sleep(0.5)
         
         return translated
     
@@ -1399,92 +1227,6 @@ class DeepLTranslator:
         
         return new_notes
     
-    def count_untranslated_texts(self, original_slide: Dict, translated_slide: Dict) -> int:
-        """Count how many texts remain untranslated (still in English)"""
-        untranslated_count = 0
-        
-        # Compare elements
-        orig_elements = original_slide.get("elements", [])
-        trans_elements = translated_slide.get("elements", [])
-        
-        for orig_elem, trans_elem in zip(orig_elements, trans_elements):
-            # Check text elements
-            if orig_elem.get("element_type") in ["TextBox", "AutoShape"]:
-                orig_paragraphs = orig_elem.get("paragraphs", [])
-                trans_paragraphs = trans_elem.get("paragraphs", [])
-                
-                for orig_para, trans_para in zip(orig_paragraphs, trans_paragraphs):
-                    orig_runs = orig_para.get("runs", [])
-                    trans_runs = trans_para.get("runs", [])
-                    
-                    for orig_run, trans_run in zip(orig_runs, trans_runs):
-                        orig_text = orig_run.get("text", "").strip()
-                        trans_text = trans_run.get("text", "").strip()
-                        
-                        # If text exists and is identical, it wasn't translated
-                        if orig_text and trans_text and orig_text == trans_text:
-                            untranslated_count += 1
-        
-        return untranslated_count
-    
-    def translate_slide_with_retry(self, slide: Dict, slide_num: int, max_retries: int = 3) -> Dict:
-        """
-        Translate a slide with retry logic.
-        Retries entire slide up to max_retries times if translation fails.
-        
-        Args:
-            slide: Slide dictionary to translate
-            slide_num: Slide number for logging
-            max_retries: Maximum number of retry attempts (default: 3)
-            
-        Returns:
-            Translated slide dictionary
-        """
-        best_translation = None
-        best_untranslated_count = float('inf')
-        
-        for attempt in range(max_retries):
-            try:
-                # Attempt translation
-                translated_slide = self.translate_slide(slide, slide_num)
-                
-                # Count how many texts remain untranslated
-                untranslated_count = self.count_untranslated_texts(slide, translated_slide)
-                
-                # If perfect translation (0 untranslated), return immediately
-                if untranslated_count == 0:
-                    if attempt > 0:
-                        print(f"✓ (retry {attempt + 1} succeeded)")
-                    return translated_slide
-                
-                # Keep track of best attempt
-                if untranslated_count < best_untranslated_count:
-                    best_untranslated_count = untranslated_count
-                    best_translation = translated_slide
-                
-                # If not the last attempt and we have failures, retry
-                if attempt < max_retries - 1 and untranslated_count > 0:
-                    print(f"⚠️  {untranslated_count} texts failed, retrying... (attempt {attempt + 2}/{max_retries})", end=" ", flush=True)
-                    time.sleep(2)  # Wait before retry
-                    continue
-                else:
-                    # Last attempt or success
-                    if untranslated_count > 0:
-                        print(f"⚠️  {untranslated_count} texts remain untranslated after {max_retries} attempts")
-                    return best_translation
-                    
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    print(f"⚠️  Error on attempt {attempt + 1}, retrying...", end=" ", flush=True)
-                    time.sleep(2)
-                    continue
-                else:
-                    print(f"⚠️  Failed after {max_retries} attempts: {e}")
-                    # Return original slide as last resort
-                    return deepcopy(slide)
-        
-        return best_translation if best_translation else deepcopy(slide)
-    
     def translate_slide(self, slide: Dict, slide_num: int) -> Dict:
         """Translate a single slide while preserving all metadata"""
         new_slide = deepcopy(slide)
@@ -1541,22 +1283,11 @@ class DeepLTranslator:
             translated_data["slide_masters"] = deepcopy(data["slide_masters"])
         
         start_time = time.time()
-        failed_slides = []  # Track slides with translation issues
-        
         for idx, slide in enumerate(data["slides"], 1):
             print(f"  Translating slide {idx}/{data['total_slides']}...", end=" ", flush=True)
-            
-            # Use retry logic for each slide
-            translated_slide = self.translate_slide_with_retry(slide, idx, max_retries=3)
+            translated_slide = self.translate_slide(slide, idx)
             translated_data["slides"].append(translated_slide)
-            
-            # Check if slide has untranslated content
-            untranslated_count = self.count_untranslated_texts(slide, translated_slide)
-            if untranslated_count > 0:
-                failed_slides.append((idx, untranslated_count))
-            
-            if untranslated_count == 0:
-                print("✓")
+            print("✓")
             
             # Small delay to avoid rate limits
             if idx < data['total_slides']:
@@ -1570,14 +1301,6 @@ class DeepLTranslator:
         print(f"  API calls: {self.stats['api_calls']}")
         print(f"  Characters: {self.stats['total_characters']}")
         print(f"  Time: {elapsed_time:.2f} seconds")
-        
-        # Report slides with issues
-        if failed_slides:
-            print(f"\n⚠️  Warning: {len(failed_slides)} slides have untranslated content:")
-            for slide_num, count in failed_slides[:10]:  # Show first 10
-                print(f"     Slide {slide_num}: {count} texts remain in original language")
-            if len(failed_slides) > 10:
-                print(f"     ... and {len(failed_slides) - 10} more slides")
         
         return translated_data
 
@@ -1899,297 +1622,23 @@ class PPTXReassembler:
 
 
 # ============================================================================
-# PART 4: TRANSLATION RECORD GENERATOR - Excel Report Generation
-# ============================================================================
-
-class TranslationRecordGenerator:
-    """Generates Excel translation records comparing original and translated content"""
-    
-    def __init__(self, extraction_data: Dict, translation_data: Dict):
-        """
-        Initialize with extraction and translation data dictionaries
-        
-        Args:
-            extraction_data: Original extracted content dictionary
-            translation_data: Translated content dictionary
-        """
-        self.extraction_data = extraction_data
-        self.translation_data = translation_data
-        self.target_language = translation_data.get('target_language', 'Unknown')
-        self.is_rtl = translation_data.get('is_rtl', False)
-        
-        self.stats = {
-            "total_records": 0,
-            "text_runs": 0,
-            "tables": 0,
-            "charts": 0,
-            "speaker_notes": 0,
-            "smartart": 0
-        }
-    
-    def sanitize_text(self, text):
-        """Remove illegal characters for Excel"""
-        if not text or not isinstance(text, str):
-            return text
-        
-        # Remove illegal XML characters for Excel
-        illegal_chars = re.compile(r'[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F-\x9F]')
-        sanitized = illegal_chars.sub('', text)
-        sanitized = sanitized.replace('\v', '').replace('\f', '')
-        return sanitized
-    
-    def extract_text_from_runs(self, runs):
-        """Extract concatenated text from runs"""
-        if not runs:
-            return ""
-        return "".join(run.get("text", "") for run in runs)
-    
-    def extract_metadata_from_element(self, element, run=None, para_format=None):
-        """Extract comprehensive metadata from an element"""
-        metadata = {
-            "font_name": "", "font_size": "", "bold": "", "italic": "",
-            "underline": "", "font_color": "", "text_alignment": "",
-            "is_bulleted": "", "bullet_type": "", "placeholder_type": "",
-            "shape_width": "", "shape_height": "", "background_color": "",
-            "has_shadow": "", "text_direction": ""
-        }
-        
-        if run:
-            metadata["font_name"] = run.get("font_name", "")
-            metadata["font_size"] = f"{run.get('font_size', '')}pt" if run.get('font_size') else ""
-            metadata["bold"] = "Yes" if run.get("bold") else "No"
-            metadata["italic"] = "Yes" if run.get("italic") else "No"
-            metadata["underline"] = "Yes" if run.get("underline") else "No"
-            
-            font_color = run.get("color")
-            if font_color and isinstance(font_color, dict):
-                metadata["font_color"] = font_color.get('rgb', font_color.get('theme_color', ''))
-        
-        if para_format:
-            alignment = para_format.get("alignment", "")
-            if alignment and "." in str(alignment):
-                metadata["text_alignment"] = str(alignment).split(".")[-1]
-            
-            bullet_info = para_format.get("bullet_format", {})
-            metadata["is_bulleted"] = "Yes" if bullet_info.get("is_bulleted") else "No"
-            metadata["bullet_type"] = bullet_info.get("bullet_type", "")
-        
-        if element:
-            placeholder_info = element.get("placeholder_info", {})
-            if placeholder_info.get("is_placeholder"):
-                ph_type = placeholder_info.get("placeholder_type", "")
-                if "." in ph_type:
-                    metadata["placeholder_type"] = ph_type.split(".")[-1]
-            
-            dimensions = element.get("dimensions", {})
-            if dimensions.get("width"):
-                try:
-                    metadata["shape_width"] = f"{dimensions['width'] / 914400:.2f} in"
-                except:
-                    pass
-            if dimensions.get("height"):
-                try:
-                    metadata["shape_height"] = f"{dimensions['height'] / 914400:.2f} in"
-                except:
-                    pass
-        
-        return metadata
-    
-    def process_text_element(self, original_elem, translated_elem, slide_num, records):
-        """Process text elements and extract records"""
-        element_type = original_elem.get("element_type", "Unknown")
-        element_name = original_elem.get("shape_name", "Unnamed")
-        
-        dimensions = original_elem.get("dimensions", {})
-        location = f"Slide {slide_num}"
-        
-        original_paragraphs = original_elem.get("paragraphs", [])
-        translated_paragraphs = translated_elem.get("paragraphs", [])
-        
-        for orig_para, trans_para in zip(original_paragraphs, translated_paragraphs):
-            orig_runs = orig_para.get("runs", [])
-            trans_runs = trans_para.get("runs", [])
-            para_format = orig_para.get("paragraph_formatting", {})
-            
-            for orig_run, trans_run in zip(orig_runs, trans_runs):
-                original_text = orig_run.get("text", "")
-                translated_text = trans_run.get("text", "")
-                
-                if not original_text.strip() and not translated_text.strip():
-                    continue
-                
-                metadata = self.extract_metadata_from_element(original_elem, orig_run, para_format)
-                
-                orig_len = len(original_text)
-                trans_len = len(translated_text)
-                length_change_str = f"{((trans_len - orig_len) / orig_len) * 100:+.1f}%" if orig_len > 0 else "N/A"
-                
-                record = {
-                    "record_id": self.stats["total_records"] + 1,
-                    "slide_number": slide_num,
-                    "element_type": element_type,
-                    "element_name": element_name,
-                    "location": location,
-                    "original_text": original_text,
-                    "translated_text": translated_text,
-                    "char_count_original": orig_len,
-                    "char_count_translated": trans_len,
-                    "length_change_percent": length_change_str,
-                    **metadata,
-                    "notes": ""
-                }
-                
-                records.append(record)
-                self.stats["total_records"] += 1
-                self.stats["text_runs"] += 1
-    
-    def generate_records(self):
-        """Generate all translation records"""
-        records = []
-        
-        original_slides = self.extraction_data.get("slides", [])
-        translated_slides = self.translation_data.get("slides", [])
-        
-        for slide_idx, (orig_slide, trans_slide) in enumerate(zip(original_slides, translated_slides), 1):
-            orig_elements = orig_slide.get("elements", [])
-            trans_elements = trans_slide.get("elements", [])
-            
-            for orig_elem, trans_elem in zip(orig_elements, trans_elements):
-                element_type = orig_elem.get("element_type")
-                
-                if element_type in ["TextBox", "AutoShape"]:
-                    self.process_text_element(orig_elem, trans_elem, slide_idx, records)
-        
-        return records
-    
-    def create_workbook(self):
-        """Create and style the Excel workbook"""
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Translation Record"
-        
-        headers = [
-            "Record ID", "Slide Number", "Element Type", "Element Name",
-            "Location", "Original Text", "Translated Text",
-            "Char Count (Original)", "Char Count (Translated)", "Length Change %",
-            "Font Name", "Font Size", "Bold", "Italic", "Underline",
-            "Font Color", "Text Alignment", "Is Bulleted", "Bullet Type",
-            "Placeholder Type", "Shape Width", "Shape Height",
-            "Background Color", "Has Shadow", "Text Direction", "Notes"
-        ]
-        
-        # Style headers
-        header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
-        header_font = Font(bold=True, color="FFFFFF", size=11)
-        header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        
-        for col_num, header in enumerate(headers, 1):
-            cell = ws.cell(row=1, column=col_num)
-            cell.value = header
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.alignment = header_alignment
-        
-        ws.freeze_panes = 'A2'
-        return wb, ws
-    
-    def add_record(self, ws, row_num, record_data):
-        """Add a translation record to the worksheet"""
-        text_alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
-        center_alignment = Alignment(horizontal="center", vertical="center")
-        border = Border(
-            left=Side(style='thin', color='D3D3D3'),
-            right=Side(style='thin', color='D3D3D3'),
-            top=Side(style='thin', color='D3D3D3'),
-            bottom=Side(style='thin', color='D3D3D3')
-        )
-        
-        fill = PatternFill(
-            start_color="F2F2F2" if row_num % 2 == 0 else "FFFFFF",
-            end_color="F2F2F2" if row_num % 2 == 0 else "FFFFFF",
-            fill_type="solid"
-        )
-        
-        columns = [
-            ('A', record_data.get('record_id', ''), center_alignment),
-            ('B', record_data.get('slide_number', ''), center_alignment),
-            ('C', self.sanitize_text(record_data.get('element_type', '')), center_alignment),
-            ('D', self.sanitize_text(record_data.get('element_name', '')), text_alignment),
-            ('E', self.sanitize_text(record_data.get('location', '')), text_alignment),
-            ('F', self.sanitize_text(record_data.get('original_text', '')), text_alignment),
-            ('G', self.sanitize_text(record_data.get('translated_text', '')), text_alignment),
-            ('H', record_data.get('char_count_original', ''), center_alignment),
-            ('I', record_data.get('char_count_translated', ''), center_alignment),
-            ('J', self.sanitize_text(record_data.get('length_change_percent', '')), center_alignment),
-            ('K', self.sanitize_text(record_data.get('font_name', '')), center_alignment),
-            ('L', self.sanitize_text(record_data.get('font_size', '')), center_alignment),
-            ('M', self.sanitize_text(record_data.get('bold', '')), center_alignment),
-            ('N', self.sanitize_text(record_data.get('italic', '')), center_alignment),
-            ('O', self.sanitize_text(record_data.get('underline', '')), center_alignment),
-            ('P', self.sanitize_text(record_data.get('font_color', '')), center_alignment),
-            ('Q', self.sanitize_text(record_data.get('text_alignment', '')), center_alignment),
-            ('R', self.sanitize_text(record_data.get('is_bulleted', '')), center_alignment),
-            ('S', self.sanitize_text(record_data.get('bullet_type', '')), center_alignment),
-            ('T', self.sanitize_text(record_data.get('placeholder_type', '')), center_alignment),
-            ('U', self.sanitize_text(record_data.get('shape_width', '')), center_alignment),
-            ('V', self.sanitize_text(record_data.get('shape_height', '')), center_alignment),
-            ('W', self.sanitize_text(record_data.get('background_color', '')), center_alignment),
-            ('X', self.sanitize_text(record_data.get('has_shadow', '')), center_alignment),
-            ('Y', self.sanitize_text(record_data.get('text_direction', '')), center_alignment),
-            ('Z', self.sanitize_text(record_data.get('notes', '')), text_alignment)
-        ]
-        
-        for col, value, alignment in columns:
-            cell = ws[f"{col}{row_num}"]
-            cell.value = value
-            cell.alignment = alignment
-            cell.fill = fill
-            cell.border = border
-        
-        ws.row_dimensions[row_num].height = 30
-    
-    def generate_excel(self, output_path: str):
-        """Generate the Excel file with translation records"""
-        print("\n📊 Generating translation record Excel...")
-        
-        wb, ws = self.create_workbook()
-        records = self.generate_records()
-        
-        for idx, record in enumerate(records, 2):
-            self.add_record(ws, idx, record)
-        
-        wb.save(output_path)
-        
-        print(f"✓ Excel record saved: {output_path}")
-        print(f"  Total records: {self.stats['total_records']}")
-        print(f"  Text runs: {self.stats['text_runs']}")
-        
-        return self.stats
-
-
-# ============================================================================
 # MAIN PIPELINE
 # ============================================================================
 
-def run_pipeline(input_pptx: str, target_language: str, output_pptx: Optional[str] = None, 
-                 source_language: Optional[str] = None, generate_excel: bool = True):
+def run_pipeline(input_pptx: str, target_language: str, output_pptx: Optional[str] = None):
     """
     Run the complete translation pipeline
     
     Args:
         input_pptx: Path to input PowerPoint file
-        target_language: Target language (e.g., 'Spanish', 'French', 'English')
+        target_language: Target language (e.g., 'Spanish', 'French')
         output_pptx: Optional output path (auto-generated if None)
-        source_language: Optional source language (auto-detected if None)
-        generate_excel: Whether to generate translation record Excel (default: True)
     """
     print("\n" + "=" * 80)
     print("🚀 PowerPoint Translation Pipeline")
     print("=" * 80)
     print(f"Input: {input_pptx}")
-    print(f"Source Language: {source_language if source_language else 'Auto-detect'}")
     print(f"Target Language: {target_language}")
-    print(f"Generate Excel: {'Yes' if generate_excel else 'No'}")
     print("=" * 80)
     
     # Validate input file
@@ -2197,13 +1646,10 @@ def run_pipeline(input_pptx: str, target_language: str, output_pptx: Optional[st
         print(f"❌ Error: Input file not found: {input_pptx}")
         return 1
     
-    # Generate output paths if not provided
+    # Generate output path if not provided
     if not output_pptx:
         input_path = Path(input_pptx)
         output_pptx = str(input_path.parent / f"{input_path.stem}-{target_language.lower()}-translated.pptx")
-    
-    # Generate Excel output path
-    excel_path = output_pptx.replace('.pptx', '-translation-record.xlsx')
     
     try:
         # STAGE 1: EXTRACTION
@@ -2219,7 +1665,7 @@ def run_pipeline(input_pptx: str, target_language: str, output_pptx: Optional[st
         print("\n" + "=" * 80)
         print("STAGE 2: TRANSLATION")
         print("=" * 80)
-        translator = DeepLTranslator(target_language, source_language)
+        translator = DeepLTranslator(target_language)
         translated_data = translator.translate_presentation(extracted_data)
         
         # STAGE 3: REASSEMBLY
@@ -2229,23 +1675,12 @@ def run_pipeline(input_pptx: str, target_language: str, output_pptx: Optional[st
         reassembler = PPTXReassembler(input_pptx, translated_data)
         stats = reassembler.reassemble(output_pptx)
         
-        # STAGE 4: EXCEL GENERATION (Optional)
-        if generate_excel:
-            print("\n" + "=" * 80)
-            print("STAGE 4: EXCEL RECORD GENERATION")
-            print("=" * 80)
-            record_generator = TranslationRecordGenerator(extracted_data, translated_data)
-            excel_stats = record_generator.generate_excel(excel_path)
-        
         print("\n" + "=" * 80)
         print("🎉 PIPELINE COMPLETE!")
         print("=" * 80)
         print(f"✓ Input: {input_pptx}")
-        print(f"✓ Output PowerPoint: {output_pptx}")
-        if generate_excel:
-            print(f"✓ Output Excel: {excel_path}")
-        print(f"✓ Source Language: {source_language if source_language else 'Auto-detected'}")
-        print(f"✓ Target Language: {target_language}")
+        print(f"✓ Output: {output_pptx}")
+        print(f"✓ Language: {target_language}")
         print("=" * 80)
         
         return 0
@@ -2264,36 +1699,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # English to Spanish
-  python ppt-translation-pipeline.py presentation.pptx -l Spanish
-  
-  # French to English (reverse translation)
-  python ppt-translation-pipeline.py french_presentation.pptx -l English -s French
-  
-  # Arabic to English with auto-detect source
-  python ppt-translation-pipeline.py arabic_presentation.pptx -l English
-  
-  # Custom output path
-  python ppt-translation-pipeline.py presentation.pptx -l French -o output.pptx
-  
-  # Skip Excel generation
-  python ppt-translation-pipeline.py presentation.pptx -l German --no-excel
+  python ppt_translator_pipeline.py presentation.pptx -l Spanish
+  python ppt_translator_pipeline.py presentation.pptx -l French -o output.pptx
+  python ppt_translator_pipeline.py presentation.pptx -l German
 
 Supported Languages:
-  Western European: French, Spanish, Italian, German, Portuguese, Dutch, Swedish, 
-                    Danish, Norwegian, Finnish, Polish, Czech, Romanian, Hungarian,
-                    Greek, Bulgarian, Slovak, Slovenian, Lithuanian, Latvian, Estonian
-  Asian: Chinese, Japanese, Korean, Indonesian, Turkish
-  RTL: Arabic, Hebrew
-  English: For reverse translation (any language → English)
+  French, Spanish, Italian, German, Chinese, Japanese, Dutch, Swedish
 
 Features:
-  ✓ Any-to-any language translation (with source language parameter)
-  ✓ Auto-detect source language (when not specified)
-  ✓ RTL language support with layout mirroring
-  ✓ Excel translation record generation
   ✓ Comprehensive metadata preservation
   ✓ DeepL translation with glossary support
+  ✓ RTL language support
   ✓ Auto-shrink to prevent text overflow
   ✓ Template-based reassembly
         """
@@ -2310,29 +1726,13 @@ Features:
         help="Target language for translation"
     )
     parser.add_argument(
-        "-s", "--source",
-        choices=list(SUPPORTED_LANGUAGES.keys()),
-        help="Source language (optional, auto-detected if not specified)"
-    )
-    parser.add_argument(
         "-o", "--output",
         help="Path to output PowerPoint file (default: <input>-<language>-translated.pptx)"
-    )
-    parser.add_argument(
-        "--no-excel",
-        action="store_true",
-        help="Skip Excel translation record generation"
     )
     
     args = parser.parse_args()
     
-    return run_pipeline(
-        args.input_pptx, 
-        args.language, 
-        args.output,
-        args.source,
-        not args.no_excel
-    )
+    return run_pipeline(args.input_pptx, args.language, args.output)
 
 
 if __name__ == "__main__":
