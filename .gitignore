@@ -19,3 +19,6 @@ summary_report.txt
 extracted_content_with_layouts.json
 extracted_content_with_layouts_translated_spanish.json
 
+# JSON bin directory for intermediate translation files
+json_bin/
+

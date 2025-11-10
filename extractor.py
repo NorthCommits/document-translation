@@ -561,42 +561,96 @@ class PPTXExtractor:
     def extract_chart(self, shape):
         """Extract chart data including chart type, data values, and styling"""
         chart_data = {
-            "chart_type": None,      # NEW: Chart type (bar, line, pie, etc.)
-            "chart_style": None,     # NEW: Chart style ID
+            "chart_type": None,      # Chart type (bar, line, pie, etc.)
+            "chart_style": None,     # Chart style ID
             "has_title": False,
             "title": None,
-            "data_values": [],       # NEW: Actual chart data
+            "data_values": [],       # Actual chart data
             "categories": [],
-            "series_names": []
+            "series_names": [],
+            "axis_titles": {},       # Axis titles (category, value, series)
+            "data_labels": [],       # Data labels if present
+            "legend_entries": []     # Legend text entries
         }
         
         try:
             chart = shape.chart
             
-            # NEW: Extract chart type
+            # Extract chart type
             if hasattr(chart, 'chart_type'):
                 chart_data["chart_type"] = f"{str(chart.chart_type).split('.')[-1]} ({chart.chart_type})"
             
-            # NEW: Extract chart style
+            # Extract chart style
             if hasattr(chart, 'chart_style'):
                 chart_data["chart_style"] = chart.chart_style
             
             # Chart title
             if chart.has_title:
                 chart_data["has_title"] = True
-                chart_data["title"] = chart.chart_title.text_frame.text
+                try:
+                    chart_data["title"] = chart.chart_title.text_frame.text
+                except:
+                    pass
             
-            # NEW: Extract data values from chart
+            # Extract axis titles
+            try:
+                # Category axis (X-axis)
+                if hasattr(chart, 'category_axis') and chart.category_axis:
+                    if hasattr(chart.category_axis, 'has_title') and chart.category_axis.has_title:
+                        try:
+                            chart_data["axis_titles"]["category"] = chart.category_axis.axis_title.text_frame.text
+                        except:
+                            pass
+                
+                # Value axis (Y-axis)
+                if hasattr(chart, 'value_axis') and chart.value_axis:
+                    if hasattr(chart.value_axis, 'has_title') and chart.value_axis.has_title:
+                        try:
+                            chart_data["axis_titles"]["value"] = chart.value_axis.axis_title.text_frame.text
+                        except:
+                            pass
+                
+                # Series axis (for 3D charts)
+                if hasattr(chart, 'series_axis') and chart.series_axis:
+                    if hasattr(chart.series_axis, 'has_title') and chart.series_axis.has_title:
+                        try:
+                            chart_data["axis_titles"]["series"] = chart.series_axis.axis_title.text_frame.text
+                        except:
+                            pass
+            except Exception as e:
+                pass
+            
+            # Extract data values and data labels from series
             try:
                 for series_idx, series in enumerate(chart.series):
                     series_data = {
                         "series_name": series.name,
-                        "values": []
+                        "values": [],
+                        "data_labels": []
                     }
                     
                     # Extract values
                     if hasattr(series, 'values'):
                         series_data["values"] = list(series.values)
+                    
+                    # Extract data labels if present
+                    try:
+                        if hasattr(series, 'data_labels') and series.data_labels:
+                            for point_idx in range(len(series.values) if hasattr(series, 'values') else 0):
+                                try:
+                                    point = series.points[point_idx]
+                                    if hasattr(point, 'data_label') and point.data_label:
+                                        if hasattr(point.data_label, 'text_frame'):
+                                            label_text = point.data_label.text_frame.text
+                                            if label_text:
+                                                series_data["data_labels"].append({
+                                                    "point_index": point_idx,
+                                                    "text": label_text
+                                                })
+                                except:
+                                    continue
+                    except:
+                        pass
                     
                     chart_data["data_values"].append(series_data)
                     chart_data["series_names"].append(series.name)
@@ -609,6 +663,22 @@ class PPTXExtractor:
                     plot = chart.plots[0]
                     if hasattr(plot, 'categories'):
                         chart_data["categories"] = list(plot.categories)
+            except:
+                pass
+            
+            # Extract legend entries
+            try:
+                if hasattr(chart, 'has_legend') and chart.has_legend:
+                    legend = chart.legend
+                    if hasattr(legend, 'entries'):
+                        for entry in legend.entries:
+                            try:
+                                if hasattr(entry, 'text_frame') and entry.text_frame:
+                                    legend_text = entry.text_frame.text
+                                    if legend_text:
+                                        chart_data["legend_entries"].append(legend_text)
+                            except:
+                                continue
             except:
                 pass
                 
@@ -668,10 +738,50 @@ class PPTXExtractor:
             element["element_type"] = "AutoShape"
             if shape.has_text_frame:
                 element["text_frame_properties"] = self.extract_text_frame_properties(shape.text_frame)
+                element["paragraphs"] = []
+                
+                for paragraph in shape.text_frame.paragraphs:
+                    para_data = {
+                        "paragraph_formatting": self.extract_paragraph_formatting(paragraph),
+                        "runs": []
+                    }
+                    
+                    for run in paragraph.runs:
+                        run_data = self.extract_run_formatting(run)
+                        para_data["runs"].append(run_data)
+                    
+                    element["paragraphs"].append(para_data)
+                
                 element["full_text"] = shape.text_frame.text
         
         else:
             element["element_type"] = f"Other_{shape.shape_type}"
+            # Extract text from any shape that has a text frame, even if it's an "Other" type
+            if hasattr(shape, 'has_text_frame') and shape.has_text_frame:
+                try:
+                    element["text_frame_properties"] = self.extract_text_frame_properties(shape.text_frame)
+                    element["paragraphs"] = []
+                    
+                    for paragraph in shape.text_frame.paragraphs:
+                        para_data = {
+                            "paragraph_formatting": self.extract_paragraph_formatting(paragraph),
+                            "runs": []
+                        }
+                        
+                        for run in paragraph.runs:
+                            run_data = self.extract_run_formatting(run)
+                            para_data["runs"].append(run_data)
+                        
+                        element["paragraphs"].append(para_data)
+                    
+                    element["full_text"] = shape.text_frame.text
+                except Exception as e:
+                    # If text extraction fails, at least try to get basic text
+                    try:
+                        if hasattr(shape, 'text'):
+                            element["full_text"] = shape.text
+                    except:
+                        pass
         
         # Dimensions (common for all shapes)
         element["dimensions"] = {

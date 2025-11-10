@@ -946,16 +946,31 @@ Output (JSON array only):"""
             translated = self.translate_batch([new_chart["title"]])
             new_chart["title"] = translated[0]
         
-        # Translate series names in data_values
+        # Translate axis titles
+        if "axis_titles" in new_chart and new_chart["axis_titles"]:
+            for axis_type, title in new_chart["axis_titles"].items():
+                if title:
+                    translated = self.translate_batch([title])
+                    new_chart["axis_titles"][axis_type] = translated[0]
+        
+        # Translate legend entries
+        if "legend_entries" in new_chart and new_chart["legend_entries"]:
+            new_chart["legend_entries"] = self.translate_batch(new_chart["legend_entries"])
+        
+        # Translate series names in data_values and data labels
         if "data_values" in new_chart and new_chart["data_values"]:
-            series_names = [s.get("series_name", "") for s in new_chart["data_values"] if s.get("series_name")]
-            if series_names:
-                translated_names = self.translate_batch(series_names)
-                name_idx = 0
-                for series in new_chart["data_values"]:
-                    if series.get("series_name"):
-                        series["series_name"] = translated_names[name_idx]
-                        name_idx += 1
+            for series in new_chart["data_values"]:
+                # Translate series name
+                if series.get("series_name"):
+                    translated = self.translate_batch([series["series_name"]])
+                    series["series_name"] = translated[0]
+                
+                # Translate data labels
+                if "data_labels" in series and series["data_labels"]:
+                    for label in series["data_labels"]:
+                        if "text" in label and label["text"]:
+                            translated = self.translate_batch([label["text"]])
+                            label["text"] = translated[0]
         
         # Translate series_names list
         if "series_names" in new_chart and new_chart["series_names"]:

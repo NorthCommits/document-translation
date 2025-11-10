@@ -526,6 +526,7 @@ class PPTXReassembler:
     def find_shape_by_id(self, slide, shape_id: int):
         """
         Find a shape in a slide by its shape_id.
+        Searches recursively through grouped shapes.
         
         Args:
             slide: PowerPoint slide object
@@ -534,10 +535,25 @@ class PPTXReassembler:
         Returns:
             Shape object or None if not found
         """
-        for shape in slide.shapes:
-            if shape.shape_id == shape_id:
-                return shape
-        return None
+        def search_shapes(shapes):
+            """Recursively search through shapes including groups"""
+            for shape in shapes:
+                if shape.shape_id == shape_id:
+                    return shape
+                # If it's a group, search inside it
+                if hasattr(shape, 'shape_type'):
+                    try:
+                        from pptx.enum.shapes import MSO_SHAPE_TYPE
+                        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                            if hasattr(shape, 'shapes'):
+                                found = search_shapes(shape.shapes)
+                                if found:
+                                    return found
+                    except:
+                        pass
+            return None
+        
+        return search_shapes(slide.shapes)
     
     def mirror_shape_horizontal(self, shape, slide_width):
         """
@@ -777,7 +793,7 @@ class PPTXReassembler:
     
     def update_chart(self, shape, translated_chart_data: dict):
         """
-        Update chart text elements (title, series names, categories).
+        Update chart text elements (title, series names, categories, axis titles, data labels).
         Note: Chart data values are NOT translated, only text labels.
         
         Args:
@@ -796,12 +812,89 @@ class PPTXReassembler:
                     chart.chart_title.text_frame.text = translated_chart_data["title"]
                     # Enable auto-shrink for chart title
                     self.enable_auto_shrink(chart.chart_title.text_frame)
+                    # Apply RTL if needed
+                    if self.is_rtl and chart.chart_title.text_frame.paragraphs:
+                        for para in chart.chart_title.text_frame.paragraphs:
+                            self.set_rtl_if_needed(para)
                 except:
                     pass
             
-            # Update series names
+            # Update axis titles
+            translated_axis_titles = translated_chart_data.get("axis_titles", {})
+            if translated_axis_titles:
+                try:
+                    # Category axis (X-axis)
+                    if "category" in translated_axis_titles and hasattr(chart, 'category_axis'):
+                        if chart.category_axis and hasattr(chart.category_axis, 'has_title'):
+                            if chart.category_axis.has_title:
+                                try:
+                                    chart.category_axis.axis_title.text_frame.text = translated_axis_titles["category"]
+                                    if self.is_rtl and chart.category_axis.axis_title.text_frame.paragraphs:
+                                        for para in chart.category_axis.axis_title.text_frame.paragraphs:
+                                            self.set_rtl_if_needed(para)
+                                except:
+                                    pass
+                    
+                    # Value axis (Y-axis)
+                    if "value" in translated_axis_titles and hasattr(chart, 'value_axis'):
+                        if chart.value_axis and hasattr(chart.value_axis, 'has_title'):
+                            if chart.value_axis.has_title:
+                                try:
+                                    chart.value_axis.axis_title.text_frame.text = translated_axis_titles["value"]
+                                    if self.is_rtl and chart.value_axis.axis_title.text_frame.paragraphs:
+                                        for para in chart.value_axis.axis_title.text_frame.paragraphs:
+                                            self.set_rtl_if_needed(para)
+                                except:
+                                    pass
+                    
+                    # Series axis (for 3D charts)
+                    if "series" in translated_axis_titles and hasattr(chart, 'series_axis'):
+                        if chart.series_axis and hasattr(chart.series_axis, 'has_title'):
+                            if chart.series_axis.has_title:
+                                try:
+                                    chart.series_axis.axis_title.text_frame.text = translated_axis_titles["series"]
+                                    if self.is_rtl and chart.series_axis.axis_title.text_frame.paragraphs:
+                                        for para in chart.series_axis.axis_title.text_frame.paragraphs:
+                                            self.set_rtl_if_needed(para)
+                                except:
+                                    pass
+                except:
+                    pass
+            
+            # Update series names and data labels
+            translated_data_values = translated_chart_data.get("data_values", [])
+            if translated_data_values:
+                for idx, series in enumerate(chart.series):
+                    if idx < len(translated_data_values):
+                        try:
+                            # Update series name
+                            series_name = translated_data_values[idx].get("series_name")
+                            if series_name:
+                                series.name = series_name
+                            
+                            # Update data labels
+                            data_labels = translated_data_values[idx].get("data_labels", [])
+                            if data_labels:
+                                for label_info in data_labels:
+                                    try:
+                                        point_idx = label_info.get("point_index")
+                                        label_text = label_info.get("text")
+                                        if point_idx is not None and label_text:
+                                            point = series.points[point_idx]
+                                            if hasattr(point, 'data_label') and point.data_label:
+                                                if hasattr(point.data_label, 'text_frame'):
+                                                    point.data_label.text_frame.text = label_text
+                                                    if self.is_rtl and point.data_label.text_frame.paragraphs:
+                                                        for para in point.data_label.text_frame.paragraphs:
+                                                            self.set_rtl_if_needed(para)
+                                    except:
+                                        continue
+                        except:
+                            pass
+            
+            # Fallback: Update series names from series_names list
             translated_series_names = translated_chart_data.get("series_names", [])
-            if translated_series_names:
+            if translated_series_names and not translated_data_values:
                 for idx, series in enumerate(chart.series):
                     if idx < len(translated_series_names):
                         try:
@@ -813,9 +906,9 @@ class PPTXReassembler:
             translated_categories = translated_chart_data.get("categories", [])
             if translated_categories:
                 try:
-                    # This is tricky - categories might not be directly settable
-                    # We'll try but might fail on some chart types
-                    pass  # Categories are usually in the chart data, hard to update
+                    # Categories are usually in the chart data, hard to update directly
+                    # Most chart types don't allow direct category updates after creation
+                    pass
                 except:
                     pass
             
