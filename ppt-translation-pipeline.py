@@ -48,15 +48,45 @@ DEEPL_API_KEY = os.getenv('DEEPL_API_KEY')
 DEEPL_ENDPOINT = os.getenv('DEEPL_ENDPOINT', 'https://api.deepl.com/v2/translate')
 
 # Language Configuration
+# Language Configuration
 SUPPORTED_LANGUAGES = {
+    # European Languages (LTR)
     'French': 'FR',
     'Spanish': 'ES',
     'Italian': 'IT',
     'German': 'DE',
+    'Portuguese': 'PT',
+    'Dutch': 'NL',
+    'Swedish': 'SV',
+    'Danish': 'DA',
+    'Finnish': 'FI',
+    'Norwegian': 'NB',
+    'Polish': 'PL',
+    'Czech': 'CS',
+    'Romanian': 'RO',
+    'Hungarian': 'HU',
+    'Greek': 'EL',
+    'Bulgarian': 'BG',
+    'Slovak': 'SK',
+    'Slovenian': 'SL',
+    'Estonian': 'ET',
+    'Latvian': 'LV',
+    'Lithuanian': 'LT',
+    
+    # Asian Languages (LTR)
     'Chinese': 'ZH',
     'Japanese': 'JA',
-    'Dutch': 'NL',
-    'Swedish': 'SV'
+    'Korean': 'KO',
+    'Indonesian': 'ID',
+    
+    # RTL Languages
+    'Arabic': 'AR',
+    'Hebrew': 'HE',  # Note: DeepL uses 'HE' not 'IW'
+    
+    # Other Languages
+    'Russian': 'RU',
+    'Ukrainian': 'UK',
+    'Turkish': 'TR'
 }
 
 # Glossary Configuration
