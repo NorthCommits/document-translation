@@ -168,7 +168,8 @@ if st.session_state.processing and uploaded_file is not None:
                     st.success(f"Translation completed in {st.session_state.translation_time:.2f} seconds")
                     st.markdown(f"**Texts translated:** {translation_stats['total_texts_translated']}")
                     st.markdown(f"**API calls:** {translation_stats['api_calls']}")
-                    st.markdown(f"**Tokens used:** {translation_stats['total_tokens_used']}")
+                    st.markdown(f"**Tokens used:** {translation_stats['total_tokens_used']:,}")
+                    st.markdown(f"**Total cost:** ${translation_stats['total_cost_usd']:.4f} USD")
                     
                 except Exception as e:
                     st.error(f"Translation failed: {str(e)}")

@@ -642,8 +642,15 @@ class PPTTranslator:
         self.stats = {
             "total_texts_translated": 0,
             "api_calls": 0,
-            "total_tokens_used": 0
+            "total_tokens_used": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_cost_usd": 0.0
         }
+        
+        # GPT-4o-mini pricing (per 1M tokens)
+        self.input_token_price = 0.150 / 1_000_000  # $0.150 per 1M input tokens
+        self.output_token_price = 0.600 / 1_000_000  # $0.600 per 1M output tokens
     
     def translate_batch(self, texts: List[str]) -> List[str]:
         """
@@ -708,7 +715,14 @@ Output (JSON array only):"""
             
             # Update statistics
             self.stats["api_calls"] += 1
+            self.stats["input_tokens"] += response.usage.prompt_tokens
+            self.stats["output_tokens"] += response.usage.completion_tokens
             self.stats["total_tokens_used"] += response.usage.total_tokens
+            
+            # Calculate cost
+            cost = (response.usage.prompt_tokens * self.input_token_price + 
+                   response.usage.completion_tokens * self.output_token_price)
+            self.stats["total_cost_usd"] += cost
             
             # Parse response
             response_text = response.choices[0].message.content.strip()
@@ -796,8 +810,15 @@ Output (JSON array only):"""
                 )
                 
                 self.stats["api_calls"] += 1
+                self.stats["input_tokens"] += response.usage.prompt_tokens
+                self.stats["output_tokens"] += response.usage.completion_tokens
                 self.stats["total_tokens_used"] += response.usage.total_tokens
                 self.stats["total_texts_translated"] += 1
+                
+                # Calculate cost
+                cost = (response.usage.prompt_tokens * self.input_token_price + 
+                       response.usage.completion_tokens * self.output_token_price)
+                self.stats["total_cost_usd"] += cost
                 
                 translated_text = response.choices[0].message.content.strip()
                 translated.append(translated_text)
@@ -1173,6 +1194,9 @@ Output (JSON array only):"""
         print(f"Total texts translated: {self.stats['total_texts_translated']}")
         print(f"API calls made: {self.stats['api_calls']}")
         print(f"Total tokens used: {self.stats['total_tokens_used']}")
+        print(f"  - Input tokens: {self.stats['input_tokens']:,}")
+        print(f"  - Output tokens: {self.stats['output_tokens']:,}")
+        print(f"Total cost: ${self.stats['total_cost_usd']:.4f} USD")
         print(f"Time elapsed: {elapsed_time:.2f} seconds")
         print(f"Output saved to: {output_path}")
         print("=" * 80)
